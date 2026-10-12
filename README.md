@@ -117,5 +117,11 @@ WantedBy=multi-user.target
 - **Too much CPU** — lower `DETECT_FPS`.
 - **Too many screenshots** — raise `SAVE_INTERVAL_SECONDS`.
 - **GPU not used** — if the log says *"this PyTorch build is CPU-only"*, install
-  the CUDA build of PyTorch (see <https://pytorch.org/get-started/locally/>) and
-  restart the service; the status line then shows `device cuda:0`.
+  the CUDA build of PyTorch (with the matching torchvision) and restart the service:
+
+  ```
+  python -m pip install --upgrade torch torchvision --index-url https://download.pytorch.org/whl/cu126
+  ```
+
+  (see <https://pytorch.org/get-started/locally/> for other CUDA versions);
+  the status line then shows `device cuda:0`.

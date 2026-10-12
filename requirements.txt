@@ -1,3 +1,7 @@
 ultralytics>=8.3.0
 opencv-python>=4.10.0
 python-dotenv>=1.0.0
+
+# PyTorch comes in as a dependency of ultralytics (CPU build by default on Windows).
+# For NVIDIA GPU support, install the CUDA build instead — same versions, CUDA wheels:
+#   python -m pip install --upgrade torch torchvision --index-url https://download.pytorch.org/whl/cu126

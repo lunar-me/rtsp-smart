@@ -174,9 +174,10 @@ def select_device(preference: str = "auto") -> str:
     gpu = nvidia_gpu_name()
     if gpu:
         log.warning(
-            "NVIDIA GPU found (%s) but this PyTorch build is CPU-only. Install the CUDA "
-            "build of torch (see https://pytorch.org/get-started/locally/) and restart "
-            "to enable GPU acceleration. Using CPU for now.", gpu,
+            "NVIDIA GPU found (%s) but this PyTorch build is CPU-only. Enable the GPU with:\n"
+            "    python -m pip install --upgrade torch torchvision "
+            "--index-url https://download.pytorch.org/whl/cu126\n"
+            "then restart the service. Using CPU for now.", gpu,
         )
     else:
         log.info("No NVIDIA GPU in use — running on CPU.")
