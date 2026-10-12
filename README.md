@@ -138,7 +138,12 @@ WantedBy=multi-user.target
   rate (the camera app and VLC still say 30). This is a lighting problem, not
   a network or service problem — the connect-time "Stream rate: ..." line and
   the periodic STAT line's "stream N fr" counter show the delivered rate, and
-  more light on the camera restores it.
+  more light on the camera restores it. The service is built for a varying
+  rate: analysis paces itself at `DETECT_FPS` on the newest frame, so any rate
+  above `DETECT_FPS` gives identical detection cadence and latency; only below
+  it does latency grow (stale frames are skipped, never analysed). The real
+  low-light risk is not the fps but the longer exposure — motion blur can pull
+  a moving person under `CONFIDENCE_THRESHOLD` (check with `DRAW_BOXES=true`).
 - **Too much CPU** — lower `DETECT_FPS`.
 - **Too many screenshots** — raise `SAVE_INTERVAL_SECONDS`.
 - **GPU not used** — if the log says *"this PyTorch build is CPU-only"*, install
