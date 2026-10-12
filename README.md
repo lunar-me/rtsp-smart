@@ -12,7 +12,7 @@ automatically.
 ## Quick start
 
 ```bash
-python -m pip install -r requirements.txt
+python -m pip install -r requirements.txt   # NVIDIA GPU: use requirements-gpu.txt instead
 
 cp .env.example .env          # Windows: copy .env.example .env — then set your RTSP URL inside
 
@@ -24,7 +24,7 @@ python main.py                # start the service (Ctrl+C to stop)
 
 > First run downloads the YOLO weights automatically (~5 MB, needs internet).
 > The pip install is large because it includes PyTorch (CPU build by default;
-> for NVIDIA GPU support see Troubleshooting).
+> for NVIDIA GPU support use `requirements-gpu.txt` instead — see Troubleshooting).
 
 ## How it works
 
@@ -117,11 +117,12 @@ WantedBy=multi-user.target
 - **Too much CPU** — lower `DETECT_FPS`.
 - **Too many screenshots** — raise `SAVE_INTERVAL_SECONDS`.
 - **GPU not used** — if the log says *"this PyTorch build is CPU-only"*, install
-  the CUDA build of PyTorch (with the matching torchvision) and restart the service:
+  the CUDA build of PyTorch and restart the service:
 
   ```
-  python -m pip install --upgrade torch torchvision --index-url https://download.pytorch.org/whl/cu126
+  python -m pip install -r requirements-gpu.txt
   ```
 
-  (see <https://pytorch.org/get-started/locally/> for other CUDA versions);
+  (works on a fresh venv and also switches an existing CPU install; see
+  <https://pytorch.org/get-started/locally/> for other CUDA versions);
   the status line then shows `device cuda:0`.

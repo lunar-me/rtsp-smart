@@ -1,0 +1,12 @@
+# GPU variant - CUDA 12.6 build of PyTorch for NVIDIA GPUs (Windows/Linux).
+# Install with:
+#   python -m pip install -r requirements-gpu.txt
+# Works on a fresh venv and also switches an existing CPU install to CUDA.
+# Bump the two pins below when you upgrade PyTorch; for other CUDA versions
+# see https://pytorch.org/get-started/locally/
+--extra-index-url https://download.pytorch.org/whl/cu126
+torch==2.14.1+cu126
+torchvision==0.29.1+cu126
+ultralytics>=8.3.0
+opencv-python>=4.10.0
+python-dotenv>=1.0.0
