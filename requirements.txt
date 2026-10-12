@@ -1,6 +1,10 @@
 # PyTorch comes in as a dependency of ultralytics (CPU build by default on Windows).
 # For NVIDIA GPU support use requirements-gpu.txt instead (CUDA build of PyTorch).
 
+# PyAV (av) — RTSP/H.264 decoding with per-frame corruption reporting
+# (replaces OpenCV's VideoCapture, which cannot see corrupted frames).
+av>=14.0.0
+
 ultralytics>=8.3.0
 opencv-python>=4.10.0
 python-dotenv>=1.0.0

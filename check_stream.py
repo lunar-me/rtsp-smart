@@ -15,6 +15,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
@@ -22,7 +23,7 @@ from pathlib import Path
 import cv2
 
 from main import (CONNECT_WARMUP_SECONDS, crop_active_window, load_config,
-                  mask_credentials, set_ffmpeg_options)
+                  mask_credentials)
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
@@ -40,14 +41,18 @@ def main() -> int:
         print("No RTSP URL configured — set RTSP_STREAM in .env or pass --url.")
         return 1
 
-    set_ffmpeg_options(cfg["transport"])
+    # The service itself decodes with PyAV; this diagnostic intentionally uses
+    # the plain OpenCV path, so a camera problem can be told apart from a
+    # service problem. These options mirror the service's RTSP settings.
+    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
+        f"rtsp_transport;{cfg['transport']}|timeout;5000000")
     print(f"Connecting to {mask_credentials(url)} (transport={cfg['transport']}) ...")
     cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
     if not cap.isOpened():
         print("FAILED: could not open the stream. Check the URL, credentials,")
         print("that the PC is on the camera's network, and that RTSP is enabled.")
         return 1
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)   # same as the service: keep only the newest frame
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)   # no-op on OpenCV's FFMPEG backend, harmless
 
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))

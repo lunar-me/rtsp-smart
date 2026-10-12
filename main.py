@@ -13,8 +13,10 @@ After a screenshot, no frame is analysed for SAVE_INTERVAL_SECONDS
 (no save is possible anyway). If the stream drops, the service
 reconnects automatically (the first second of frames is discarded —
 a decoder that joins mid-GOP cannot produce intact frames before the
-first keyframe); every STAT_INTERVAL_SECONDS a status line (received,
-analysed, dropped, device, screenshots) proves it is alive.
+first keyframe). Frames the decoder flags as corrupt (glitched H.264 data)
+are discarded and counted — they never reach detection.
+Every STAT_INTERVAL_SECONDS a status line (received, analysed, dropped,
+corrupt, device, screenshots) proves it is alive.
 
 Usage:
     python main.py                 run the service (Ctrl+C to stop)
@@ -42,6 +44,11 @@ try:                                # Windows console API (used by the hotkey)
     import msvcrt
 except ImportError:                 # not Windows — the hotkey is unavailable
     msvcrt = None
+
+try:
+    import av  # PyAV — RTSP/H.264 decoding that reports corruption per frame
+except ImportError:            # the service refuses to run without it (see run_service)
+    av = None
 
 import cv2
 import torch
@@ -188,9 +195,26 @@ def select_device(preference: str = "auto") -> str:
 
 
 
-def set_ffmpeg_options(transport: str) -> None:
-    """Force RTSP transport and a 5 s socket timeout so a dead camera cannot hang us."""
-    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = f"rtsp_transport;{transport}|timeout;5000000"
+def rtsp_options(transport: str) -> dict:
+    """FFmpeg options for opening the RTSP stream with PyAV: force the
+    transport and a 5 s socket timeout so a dead camera cannot hang us."""
+    return {"rtsp_transport": transport, "timeout": "5000000"}
+
+
+def claimed_fps(stream) -> float:
+    """The frame rate the stream metadata claims (a Fraction, or None).
+
+    Never trusted for anything — only reported next to the measured rate,
+    because cameras often misreport it (sometimes by half).
+    """
+    for rate in (stream.average_rate, stream.codec_context.framerate):
+        try:
+            fps = float(rate)
+        except (TypeError, ZeroDivisionError):
+            continue
+        if fps > 0.0:
+            return fps
+    return 0.0
 
 
 # --------------------------------------------------------------------------- #
@@ -207,77 +231,44 @@ class RTSPReader(threading.Thread):
     joins mid-GOP and cannot produce intact frames before the first keyframe.
     The true frame rate is then measured over the next RATE_MEASURE_SECONDS and
     logged — the camera's metadata claim is often wrong (sometimes half the rate).
+
+    Corrupt frames never reach detection: when the camera sends glitched
+    H.264 data, FFmpeg conceals it into smeared frames — the reader (PyAV)
+    sees the corruption flag, discards the frame and counts it in the status
+    line. OpenCV hides this: it reports such frames as normal.
     """
 
-    def __init__(self, url: str) -> None:
+    def __init__(self, url: str, transport: str = "tcp") -> None:
         super().__init__(daemon=True, name="rtsp-reader")
         self.url = url
+        self.transport = transport
         self._lock = threading.Lock()
         self._frame = None
         self._frame_ts = 0.0
         self._frames_read = 0
+        self._corrupt_skipped = 0
         self._stop = threading.Event()
 
     def run(self) -> None:
         backoff = 1.0
         while not self._stop.is_set():
             opened = False
-            cap = cv2.VideoCapture(self.url, cv2.CAP_FFMPEG)
+            container = None
             try:
-                if cap.isOpened():
-                    opened = True
-                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                    log.info(
-                        "Stream connected (%dx%d)",
-                        int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
-                        int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
-                    )
-                    t_connect = time.time()
-                    warmup_until = t_connect + CONNECT_WARMUP_SECONDS
-                    rate_until = warmup_until + RATE_MEASURE_SECONDS
-                    rate_frames = 0
-                    rate_reported = False
-                    while not self._stop.is_set():
-                        ok, frame = cap.read()
-                        if not ok:
-                            break
-                        now = time.time()
-                        if now < warmup_until:
-                            # The decoder joined mid-GOP: until the first keyframe
-                            # arrives it can only guess, and these frames may be
-                            # glitched (FFmpeg's "corrupted macroblock" lines).
-                            continue
-                        if not rate_reported:
-                            # Measure the true frame rate once, right after the
-                            # warm-up (the connect-time burst of buffered frames
-                            # has drained); the camera's metadata claim is often
-                            # wrong (some encoders report half the real fps).
-                            if now < rate_until:
-                                rate_frames += 1
-                            else:
-                                rate_reported = True
-                                measured = rate_frames / RATE_MEASURE_SECONDS
-                                claimed = cap.get(cv2.CAP_PROP_FPS)
-                                if claimed > 0.0:
-                                    log.info(
-                                        "Stream rate: ~%.1f fps measured over %.1f s "
-                                        "(camera metadata claimed %.1f fps)",
-                                        measured, RATE_MEASURE_SECONDS, claimed,
-                                    )
-                                else:
-                                    log.info(
-                                        "Stream rate: ~%.1f fps measured over %.1f s",
-                                        measured, RATE_MEASURE_SECONDS,
-                                    )
-                        with self._lock:
-                            self._frame = frame
-                            self._frame_ts = time.time()
-                            self._frames_read += 1
-                        backoff = 1.0
-                else:
-                    log.warning("Cannot open stream, retrying in %.0f s ...", backoff)
-            finally:
-                cap.release()
+                container = av.open(self.url, options=rtsp_options(self.transport))
+            except Exception as exc:
+                log.warning("Cannot open stream (%s), retrying in %.0f s ...", exc, backoff)
+            if container is not None:
+                opened = True
+                stored = 0
+                try:
+                    stored = self._read_stream(container)
+                except Exception as exc:
+                    log.warning("Stream read failed (%s), dropping it.", exc)
+                finally:
+                    container.close()
+                if stored:
+                    backoff = 1.0        # a productive connection: reconnect fast next time
 
             if self._stop.is_set():
                 break
@@ -286,6 +277,90 @@ class RTSPReader(threading.Thread):
             if self._stop.wait(backoff):
                 break
             backoff = min(backoff * 2.0, 15.0)
+
+    def _read_stream(self, container) -> int:
+        """Demux and decode the stream until it ends; returns the frames stored.
+
+        Raises on a stream drop (network error, timeout, end of stream) so the
+        caller can reconnect; damaged data never raises here — corrupt packets
+        and frames are discarded and counted instead.
+        """
+        stream = container.streams.video[0]
+        stream.codec_context.thread_type = "AUTO"    # multi-threaded decode keeps up
+        stream.codec_context.thread_count = 0        # 0 = choose automatically
+        log.info(
+            "Stream connected (%dx%d)",
+            stream.codec_context.width, stream.codec_context.height,
+        )
+        claimed = claimed_fps(stream)
+        t_connect = time.time()
+        warmup_until = t_connect + CONNECT_WARMUP_SECONDS
+        rate_until = warmup_until + RATE_MEASURE_SECONDS
+        rate_frames = 0
+        rate_reported = False
+        last_corrupt_log = 0.0
+        stored = 0
+
+        for packet in container.demux(stream):
+            if self._stop.is_set():
+                return stored
+            try:
+                frames = packet.decode()
+            except av.error.FFmpegError:
+                # The packet was too damaged to decode at all — discard and
+                # count it; the next packet decodes normally.
+                with self._lock:
+                    self._corrupt_skipped += 1
+                now = time.time()
+                if now - last_corrupt_log >= 30.0:    # log at most once per 30 s
+                    last_corrupt_log = now
+                    log.warning("Undecodable video data discarded (corrupt packet)")
+                continue
+            for frame in frames or ():
+                now = time.time()
+                if frame.is_corrupt:
+                    # The camera sent glitched H.264 data; FFmpeg concealed it
+                    # into a smeared frame — that must not reach detection.
+                    if now >= warmup_until:
+                        with self._lock:
+                            self._corrupt_skipped += 1
+                        if now - last_corrupt_log >= 30.0:    # log at most once per 30 s
+                            last_corrupt_log = now
+                            log.warning("Corrupt frame discarded (damaged H.264 data)")
+                    continue
+                if now < warmup_until:
+                    # The decoder joined mid-GOP: until the first keyframe
+                    # arrives it can only guess, and these frames may be
+                    # glitched (FFmpeg's "corrupted macroblock" lines).
+                    continue
+                if not rate_reported:
+                    # Measure the true frame rate once, right after the
+                    # warm-up (the connect-time burst of buffered frames
+                    # has drained); the camera's metadata claim is often
+                    # wrong (some encoders report half the real fps).
+                    if now < rate_until:
+                        rate_frames += 1
+                    else:
+                        rate_reported = True
+                        measured = rate_frames / RATE_MEASURE_SECONDS
+                        if claimed > 0.0:
+                            log.info(
+                                "Stream rate: ~%.1f fps measured over %.1f s "
+                                "(camera metadata claimed %.1f fps)",
+                                measured, RATE_MEASURE_SECONDS, claimed,
+                            )
+                        else:
+                            log.info(
+                                "Stream rate: ~%.1f fps measured over %.1f s",
+                                measured, RATE_MEASURE_SECONDS,
+                            )
+                image = frame.to_ndarray(format="bgr24")    # convert outside the lock
+                with self._lock:
+                    self._frame = image
+                    self._frame_ts = now
+                    self._frames_read += 1
+                stored += 1
+        return stored
 
     def latest(self):
         """Return (frame, unix_timestamp) of the newest frame, or (None, 0.0)."""
@@ -296,6 +371,11 @@ class RTSPReader(threading.Thread):
         """Total frames received from the stream since the service started."""
         with self._lock:
             return self._frames_read
+
+    def corrupt_skipped(self) -> int:
+        """Frames discarded as corrupt (damaged H.264 data) since the service started."""
+        with self._lock:
+            return self._corrupt_skipped
 
     def stop(self) -> None:
         self._stop.set()
@@ -425,6 +505,11 @@ def run_service(cfg: dict, limit_seconds: float | None = None) -> int:
         log.error("No RTSP URL configured — set RTSP_STREAM in .env")
         return 1
 
+    if av is None:
+        log.error("The PyAV package is required to decode the RTSP stream —"
+                  " install it with:  python -m pip install av")
+        return 1
+
     save_dir = resolve_path(cfg["save_dir"])
     save_dir.mkdir(parents=True, exist_ok=True)
     detections_log = save_dir / "detections.jsonl"
@@ -442,8 +527,7 @@ def run_service(cfg: dict, limit_seconds: float | None = None) -> int:
         cfg["save_interval"], save_dir,
     )
 
-    set_ffmpeg_options(cfg["transport"])
-    reader = RTSPReader(cfg["rtsp_url"])
+    reader = RTSPReader(cfg["rtsp_url"], cfg["transport"])
     reader.start()
 
     trigger_visible = False
@@ -457,6 +541,7 @@ def run_service(cfg: dict, limit_seconds: float | None = None) -> int:
     # Counters for the periodic one-line status (STAT_INTERVAL_SECONDS).
     last_stat = time.time()
     frames_read_prev = 0
+    corrupt_prev = 0
     stat_analysed = 0
     stat_stale = 0
     stat_trigger = 0
@@ -475,6 +560,7 @@ def run_service(cfg: dict, limit_seconds: float | None = None) -> int:
             if now - last_stat >= cfg["stat_interval"]:
                 window = now - last_stat
                 received = reader.frames_read() - frames_read_prev
+                corrupt = reader.corrupt_skipped() - corrupt_prev
                 # The loop samples only the newest frame at DETECT_FPS; frames
                 # are also skipped while the save cooldown runs. Both count as
                 # dropped — by design. "stale" counts checks skipped because the
@@ -484,12 +570,13 @@ def run_service(cfg: dict, limit_seconds: float | None = None) -> int:
                 avg_ms = stat_infer_ms / stat_analysed if stat_analysed else 0.0
                 log.info(
                     "STAT %ds: stream %d fr | analysed %d (%.1f fps, %.0f ms/frame) | "
-                    "dropped %d | trigger %d fr",
+                    "dropped %d | corrupt %d fr | trigger %d fr",
                     int(window), received, stat_analysed, fps, avg_ms,
-                    dropped, stat_trigger,
+                    dropped, corrupt, stat_trigger,
                 )
                 last_stat = now
                 frames_read_prev = reader.frames_read()
+                corrupt_prev = reader.corrupt_skipped()
                 stat_analysed = stat_stale = stat_trigger = stat_shots = 0
                 stat_infer_ms = 0.0
 

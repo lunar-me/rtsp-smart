@@ -30,6 +30,12 @@ python main.py                # start the service (Ctrl+C to stop)
 
 - A background thread keeps **only the most recent frame** from the camera, so
   internal buffering can never build up latency.
+- Video is decoded with PyAV (`av`, bundled FFmpeg), which reports corruption
+  per frame: when the camera sends glitched H.264 data — FFmpeg would "conceal"
+  it into a smeared frame — the frame is **discarded and counted** (the `corrupt
+  N fr` field of the status line) and never reaches detection. OpenCV cannot see
+  these errors at all; it hands concealed frames to the detector as if they
+  were fine.
 - Each analysed frame is first cropped to the `ACTIVE_WINDOW` region
   (x1,y1,x2,y2 in % of the frame, from the top-left corner;
   default `0,0,100,100` = full frame) — screenshots and `stream_check.jpg`
@@ -46,9 +52,10 @@ python main.py                # start the service (Ctrl+C to stop)
   no screenshots are made from an old image.
 - If the stream drops: automatic reconnect with exponential backoff (1 s -> 15 s); the first second of frames after every (re)connect is discarded — the decoder cannot produce intact frames before the first keyframe. After the warm-up the true frame rate is measured over the next 2 s and logged ("Stream rate: ~15.1 fps measured over 2.0 s ...") — RTSP metadata often misreports it.
 - A one-line status is logged every `STAT_INTERVAL_SECONDS` (default 60 s):
-  frames received / analysed / dropped (superseded between analyses, or
-  skipped while the screenshot cooldown runs — by design, the loop samples
-  only the newest frame at `DETECT_FPS`), analysis speed, stale checks, trigger frames, screenshots, device.
+  frames received / analysed / dropped / corrupt-discarded (superseded between
+  analyses, or skipped while the screenshot cooldown runs — by design, the loop
+  samples only the newest frame at `DETECT_FPS`; corrupt = damaged H.264 data),
+  analysis speed, stale checks, trigger frames, screenshots, device.
 - The NVIDIA GPU is used automatically when available (`DEVICE=auto`); the
   status line shows which device is actually in use.
 
@@ -119,10 +126,11 @@ WantedBy=multi-user.target
   raw detections in the log.
 - **`[h264 @ ...] corrupted macroblock` / `error while decoding MB` in the console** —
   the camera's H.264 stream glitched (typical with phone webcam apps; right after
-  a (re)connect it is even expected, before the first keyframe). FFmpeg conceals it
-  and keeps decoding, and those first frames are never analysed. If the lines
-  spam non-stop while running, lower the camera app's resolution/bitrate or
-  improve its Wi-Fi link.
+  a (re)connect it is even expected, before the first keyframe). Such frames
+  don't reach detection: the PyAV decoder flags them as corrupt, the reader
+  discards them and counts them in the status line's `corrupt N fr` (a warning
+  is logged at most every 30 s). If the corrupt counter climbs constantly,
+  lower the camera app's resolution/bitrate or improve its Wi-Fi link.
 - **Wrong fps in the log** — cameras frequently misreport their frame rate in
   RTSP/H.264 metadata (some encoders claim half the real rate). rtsp-smart
   therefore never trusts it: it measures the true rate over the seconds right
