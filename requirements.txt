@@ -1,6 +1,6 @@
+# PyTorch comes in as a dependency of ultralytics (CPU build by default on Windows).
+# For NVIDIA GPU support use requirements-gpu.txt instead (CUDA build of PyTorch).
+
 ultralytics>=8.3.0
 opencv-python>=4.10.0
 python-dotenv>=1.0.0
-
-# PyTorch comes in as a dependency of ultralytics (CPU build by default on Windows).
-# For NVIDIA GPU support use requirements-gpu.txt instead (CUDA build of PyTorch).

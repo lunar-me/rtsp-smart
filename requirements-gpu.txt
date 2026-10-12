@@ -4,6 +4,7 @@
 # Works on a fresh venv and also switches an existing CPU install to CUDA.
 # Bump the two pins below when you upgrade PyTorch; for other CUDA versions
 # see https://pytorch.org/get-started/locally/
+
 --extra-index-url https://download.pytorch.org/whl/cu126
 torch==2.14.1+cu126
 torchvision==0.29.1+cu126
