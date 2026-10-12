@@ -127,7 +127,10 @@ WantedBy=multi-user.target
   RTSP/H.264 metadata (some encoders claim half the real rate). rtsp-smart
   therefore never trusts it: it measures the true rate over the seconds right
   after the connect warm-up and logs it as a "Stream rate: ..." line.
-  `python check_stream.py` measures the same thing for a quick check.
+  `python check_stream.py` measures the same thing for a quick check. Note that
+  VLC's "codec information" fps is the same declared value — to measure in VLC,
+  open Tools -> Messages (verbosity "2: Debug"), and watch the "decoded frames"
+  counter in the Statistics tab (~150 frames per 10 s means ~15 fps).
 - **Too much CPU** — lower `DETECT_FPS`.
 - **Too many screenshots** — raise `SAVE_INTERVAL_SECONDS`.
 - **GPU not used** — if the log says *"this PyTorch build is CPU-only"*, install
