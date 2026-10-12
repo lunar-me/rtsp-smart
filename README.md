@@ -131,6 +131,14 @@ WantedBy=multi-user.target
   VLC's "codec information" fps is the same declared value — to measure in VLC,
   open Tools -> Messages (verbosity "2: Debug"), and watch the "decoded frames"
   counter in the Statistics tab (~150 frames per 10 s means ~15 fps).
+- **fps lower at night** — phone cameras auto-extend the exposure time in low
+  light; once it no longer fits in the frame period (33 ms at 30 fps) the
+  capture pipeline slows down, often to exactly half (30 -> 15) to double the
+  light per frame, while the stream metadata keeps claiming the configured
+  rate (the camera app and VLC still say 30). This is a lighting problem, not
+  a network or service problem — the connect-time "Stream rate: ..." line and
+  the periodic STAT line's "stream N fr" counter show the delivered rate, and
+  more light on the camera restores it.
 - **Too much CPU** — lower `DETECT_FPS`.
 - **Too many screenshots** — raise `SAVE_INTERVAL_SECONDS`.
 - **GPU not used** — if the log says *"this PyTorch build is CPU-only"*, install
