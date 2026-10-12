@@ -11,8 +11,10 @@ SAVE_INTERVAL_SECONDS into SAVE_DIR (relative or absolute), in a per-day
 subfolder: "<SAVE_DIR>/<YYYY-MM-DD>/<RTSP_NAME> YYYY-MM-DD HH-MM-SS.jpg".
 After a screenshot, no frame is analysed for SAVE_INTERVAL_SECONDS
 (no save is possible anyway). If the stream drops, the service
-reconnects automatically; every STAT_INTERVAL_SECONDS a status line
-(received, analysed, dropped, device, screenshots) proves it is alive.
+reconnects automatically (the first second of frames is discarded —
+a decoder that joins mid-GOP cannot produce intact frames before the
+first keyframe); every STAT_INTERVAL_SECONDS a status line (received,
+analysed, dropped, device, screenshots) proves it is alive.
 
 Usage:
     python main.py                 run the service (Ctrl+C to stop)
@@ -49,6 +51,7 @@ from ultralytics import YOLO
 PROJECT_ROOT = Path(__file__).resolve().parent
 TRIGGER_CLASS_ID = 0         # COCO id of "person" — the default trigger class
 STALE_FRAME_SECONDS = 2.0    # frames older than this are skipped (stream hiccup)
+CONNECT_WARMUP_SECONDS = 1.0 # after (re)connect, frames are discarded this long (mid-GOP join)
 SELFTEST_IMAGE = "https://ultralytics.com/images/bus.jpg"
 
 log = logging.getLogger("rtsp-smart")
@@ -198,7 +201,9 @@ class RTSPReader(threading.Thread):
 
     Because detection always runs on the newest frame, internal FFmpeg
     buffering can never make latency accumulate. Reconnects automatically when
-    the stream drops (capped exponential backoff).
+    the stream drops (capped exponential backoff). The first
+    CONNECT_WARMUP_SECONDS after each (re)connect are discarded: the decoder
+    joins mid-GOP and cannot produce intact frames before the first keyframe.
     """
 
     def __init__(self, url: str) -> None:
@@ -225,10 +230,16 @@ class RTSPReader(threading.Thread):
                         int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
                         cap.get(cv2.CAP_PROP_FPS),
                     )
+                    warmup_until = time.time() + CONNECT_WARMUP_SECONDS
                     while not self._stop.is_set():
                         ok, frame = cap.read()
                         if not ok:
                             break
+                        if time.time() < warmup_until:
+                            # The decoder joined mid-GOP: until the first keyframe
+                            # arrives it can only guess, and these frames may be
+                            # glitched (FFmpeg's "corrupted macroblock" lines).
+                            continue
                         with self._lock:
                             self._frame = frame
                             self._frame_ts = time.time()
@@ -446,7 +457,7 @@ def run_service(cfg: dict, limit_seconds: float | None = None) -> int:
                     "STAT %ds: stream %d fr | analysed %d (%.1f fps, %.0f ms/frame) | "
                     "dropped %d | trigger %d fr",
                     int(window), received, stat_analysed, fps, avg_ms,
-                    dropped, stat_stale, stat_trigger, stat_shots, device,
+                    dropped, stat_trigger,
                 )
                 last_stat = now
                 frames_read_prev = reader.frames_read()

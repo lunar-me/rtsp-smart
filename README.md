@@ -44,7 +44,7 @@ python main.py                # start the service (Ctrl+C to stop)
   saved anyway.
 - If frames stop arriving (stream hiccup), stale frames are skipped —
   no screenshots are made from an old image.
-- If the stream drops: automatic reconnect with exponential backoff (1 s -> 15 s).
+- If the stream drops: automatic reconnect with exponential backoff (1 s -> 15 s); the first second of frames after every (re)connect is discarded — the decoder cannot produce intact frames before the first keyframe.
 - A one-line status is logged every `STAT_INTERVAL_SECONDS` (default 60 s):
   frames received / analysed / dropped (superseded between analyses, or
   skipped while the screenshot cooldown runs — by design, the loop samples
@@ -117,6 +117,12 @@ WantedBy=multi-user.target
   COCO classes and that `ACTIVE_WINDOW` covers the area you expect, try a bigger
   model (`MODEL=yolo26s.pt`), or temporarily lower `CONFIDENCE_THRESHOLD` to see
   raw detections in the log.
+- **`[h264 @ ...] corrupted macroblock` / `error while decoding MB` in the console** —
+  the camera's H.264 stream glitched (typical with phone webcam apps; right after
+  a (re)connect it is even expected, before the first keyframe). FFmpeg conceals it
+  and keeps decoding, and those first frames are never analysed. If the lines
+  spam non-stop while running, lower the camera app's resolution/bitrate or
+  improve its Wi-Fi link.
 - **Too much CPU** — lower `DETECT_FPS`.
 - **Too many screenshots** — raise `SAVE_INTERVAL_SECONDS`.
 - **GPU not used** — if the log says *"this PyTorch build is CPU-only"*, install
