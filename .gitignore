@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+
+# YOLO weights (downloaded automatically on first run)
+*.pt
+
+# Runtime output
+screenshots/
+logs/
+selftest_input.jpg
+selftest_output.jpg
+stream_check.jpg
+
+# Environment / secrets
+.env
+.venv/
