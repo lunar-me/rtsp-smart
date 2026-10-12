@@ -39,9 +39,9 @@ python main.py                # start the service (Ctrl+C to stop)
   whichever class first passes `CONFIDENCE_THRESHOLD` triggers the screenshot.
 - While a trigger object is visible: one screenshot per `SAVE_INTERVAL_SECONDS`, saved as
   `<SAVE_DIR>/<YYYY-MM-DD>/<RTSP_NAME> YYYY-MM-DD HH-MM-SS.jpg` (same-second saves overwrite).
-  - After each screenshot, no frame is analysed for the rest of
-    `SAVE_INTERVAL_SECONDS` — no inference runs while no screenshot could be
-    saved anyway.
+- After each screenshot, no frame is analysed for the rest of
+  `SAVE_INTERVAL_SECONDS` — no inference runs while no screenshot could be
+  saved anyway.
 - If frames stop arriving (stream hiccup), stale frames are skipped —
   no screenshots are made from an old image.
 - If the stream drops: automatic reconnect with exponential backoff (1 s -> 15 s).
