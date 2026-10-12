@@ -39,13 +39,16 @@ python main.py                # start the service (Ctrl+C to stop)
   whichever class first passes `CONFIDENCE_THRESHOLD` triggers the screenshot.
 - While a trigger object is visible: one screenshot per `SAVE_INTERVAL_SECONDS`, saved as
   `<SAVE_DIR>/<YYYY-MM-DD>/<RTSP_NAME> YYYY-MM-DD HH-MM-SS.jpg` (same-second saves overwrite).
+  - After each screenshot, no frame is analysed for the rest of
+    `SAVE_INTERVAL_SECONDS` — no inference runs while no screenshot could be
+    saved anyway.
 - If frames stop arriving (stream hiccup), stale frames are skipped —
   no screenshots are made from an old image.
 - If the stream drops: automatic reconnect with exponential backoff (1 s -> 15 s).
 - A one-line status is logged every `STAT_INTERVAL_SECONDS` (default 60 s):
-  frames received / analysed / dropped (superseded between analyses — by design,
-  the loop samples only the newest frame at `DETECT_FPS`), analysis speed,
-  stale checks (skips during stream hiccups), trigger frames, screenshots, device.
+  frames received / analysed / dropped (superseded between analyses, or
+  skipped while the screenshot cooldown runs — by design, the loop samples
+  only the newest frame at `DETECT_FPS`), analysis speed, stale checks, trigger frames, screenshots, device.
 - The NVIDIA GPU is used automatically when available (`DEVICE=auto`); the
   status line shows which device is actually in use.
 
@@ -71,7 +74,7 @@ Copy [`.env.example`](.env.example) to `.env` as a starting point — it lists e
 | `TRIGGER_CLASS` | `person` | comma-separated COCO classes to detect, e.g. `person,dog` |
 | `CONFIDENCE_THRESHOLD` | `0.90` | minimum confidence of any trigger object |
 | `ACTIVE_WINDOW` | `0,0,100,100` | analysed region x1,y1,x2,y2 in % of the frame (from the top-left); crop width rounded to a multiple of 16 |
-| `SAVE_INTERVAL_SECONDS` | `1.0` | seconds between screenshots while a trigger object is visible |
+| `SAVE_INTERVAL_SECONDS` | `1.0` | seconds between screenshots; analysis pauses for this long after each save |
 | `DETECT_FPS` | `5` | frames analysed per second (lower = less CPU) |
 | `STAT_INTERVAL_SECONDS` | `60` | seconds between one-line status log entries |
 | `SAVE_DIR` | `screenshots` | screenshot folder — relative to the project or absolute (e.g. another disk) |

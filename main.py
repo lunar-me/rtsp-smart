@@ -9,10 +9,10 @@ frame) and run through YOLO restricted to the TRIGGER_CLASS classes
 >= CONFIDENCE_THRESHOLD one screenshot is saved every
 SAVE_INTERVAL_SECONDS into SAVE_DIR (relative or absolute), in a per-day
 subfolder: "<SAVE_DIR>/<YYYY-MM-DD>/<RTSP_NAME> YYYY-MM-DD HH-MM-SS.jpg".
-If the stream drops, the service
-reconnects automatically. Every STAT_INTERVAL_SECONDS a one-line status
-(frames received, analysed, dropped, device, screenshots) is logged, so it is
-easy to confirm the service is working.
+After a screenshot, no frame is analysed for SAVE_INTERVAL_SECONDS
+(no save is possible anyway). If the stream drops, the service
+reconnects automatically; every STAT_INTERVAL_SECONDS a status line
+(received, analysed, dropped, device, screenshots) proves it is alive.
 
 Usage:
     python main.py                 run the service (Ctrl+C to stop)
@@ -435,10 +435,10 @@ def run_service(cfg: dict, limit_seconds: float | None = None) -> int:
             if now - last_stat >= cfg["stat_interval"]:
                 window = now - last_stat
                 received = reader.frames_read() - frames_read_prev
-                # The loop samples only the newest frame at DETECT_FPS, so most
-                # received frames are superseded between analyses (dropped — by
-                # design). "stale" counts checks skipped because the newest frame
-                # was older than STALE_FRAME_SECONDS (a stream hiccup).
+                # The loop samples only the newest frame at DETECT_FPS; frames
+                # are also skipped while the save cooldown runs. Both count as
+                # dropped — by design. "stale" counts checks skipped because the
+                # newest frame was older than STALE_FRAME_SECONDS (a hiccup).
                 dropped = max(0, received - stat_analysed)
                 fps = stat_analysed / window
                 avg_ms = stat_infer_ms / stat_analysed if stat_analysed else 0.0
@@ -465,6 +465,15 @@ def run_service(cfg: dict, limit_seconds: float | None = None) -> int:
                 stat_stale += 1
                 time.sleep(0.25)
                 continue
+            # Screenshot cooldown: nothing can be saved until SAVE_INTERVAL_SECONDS
+            # has passed since the last screenshot, so skip the expensive
+            # inference entirely — the skipped frames count as dropped. The
+            # undocumented hotkey ('s' in the console) forces an analysis so a
+            # manual screenshot stays immediate.
+            manual_shot = check_hotkey()
+            if not manual_shot and now - last_save < cfg["save_interval"]:
+                time.sleep(frame_period)
+                continue
 
             loop_start = time.perf_counter()
             crop, win = crop_active_window(frame, cfg["active_window"])
@@ -488,9 +497,9 @@ def run_service(cfg: dict, limit_seconds: float | None = None) -> int:
                 stat_trigger += 1
 
             # Normal save: trigger object present + save interval. The
-            # undocumented hotkey ('s' in the console) saves immediately,
-            # regardless of triggers; it never affects the save pacing.
-            manual_shot = check_hotkey()
+            # undocumented hotkey ('s' in the console, checked above every
+            # iteration) saves immediately, regardless of triggers; it never
+            # affects the save pacing.
             save_now = bool(count) and time.time() - last_save >= cfg["save_interval"]
             if save_now or manual_shot:
                 image = result.plot() if cfg["draw_boxes"] else crop
