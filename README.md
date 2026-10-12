@@ -44,7 +44,7 @@ python main.py                # start the service (Ctrl+C to stop)
   saved anyway.
 - If frames stop arriving (stream hiccup), stale frames are skipped —
   no screenshots are made from an old image.
-- If the stream drops: automatic reconnect with exponential backoff (1 s -> 15 s); the first second of frames after every (re)connect is discarded — the decoder cannot produce intact frames before the first keyframe.
+- If the stream drops: automatic reconnect with exponential backoff (1 s -> 15 s); the first second of frames after every (re)connect is discarded — the decoder cannot produce intact frames before the first keyframe. After the warm-up the true frame rate is measured over the next 2 s and logged ("Stream rate: ~15.1 fps measured over 2.0 s ...") — RTSP metadata often misreports it.
 - A one-line status is logged every `STAT_INTERVAL_SECONDS` (default 60 s):
   frames received / analysed / dropped (superseded between analyses, or
   skipped while the screenshot cooldown runs — by design, the loop samples
@@ -123,6 +123,11 @@ WantedBy=multi-user.target
   and keeps decoding, and those first frames are never analysed. If the lines
   spam non-stop while running, lower the camera app's resolution/bitrate or
   improve its Wi-Fi link.
+- **Wrong fps in the log** — cameras frequently misreport their frame rate in
+  RTSP/H.264 metadata (some encoders claim half the real rate). rtsp-smart
+  therefore never trusts it: it measures the true rate over the seconds right
+  after the connect warm-up and logs it as a "Stream rate: ..." line.
+  `python check_stream.py` measures the same thing for a quick check.
 - **Too much CPU** — lower `DETECT_FPS`.
 - **Too many screenshots** — raise `SAVE_INTERVAL_SECONDS`.
 - **GPU not used** — if the log says *"this PyTorch build is CPU-only"*, install

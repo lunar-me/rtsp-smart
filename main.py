@@ -52,6 +52,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 TRIGGER_CLASS_ID = 0         # COCO id of "person" — the default trigger class
 STALE_FRAME_SECONDS = 2.0    # frames older than this are skipped (stream hiccup)
 CONNECT_WARMUP_SECONDS = 1.0 # after (re)connect, frames are discarded this long (mid-GOP join)
+RATE_MEASURE_SECONDS = 2.0   # the true stream fps is measured over this long, after the warm-up
 SELFTEST_IMAGE = "https://ultralytics.com/images/bus.jpg"
 
 log = logging.getLogger("rtsp-smart")
@@ -204,6 +205,8 @@ class RTSPReader(threading.Thread):
     the stream drops (capped exponential backoff). The first
     CONNECT_WARMUP_SECONDS after each (re)connect are discarded: the decoder
     joins mid-GOP and cannot produce intact frames before the first keyframe.
+    The true frame rate is then measured over the next RATE_MEASURE_SECONDS and
+    logged — the camera's metadata claim is often wrong (sometimes half the rate).
     """
 
     def __init__(self, url: str) -> None:
@@ -225,21 +228,47 @@ class RTSPReader(threading.Thread):
                     opened = True
                     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                     log.info(
-                        "Stream connected (%dx%d @ %.1f fps)",
+                        "Stream connected (%dx%d)",
                         int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
                         int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
-                        cap.get(cv2.CAP_PROP_FPS),
                     )
-                    warmup_until = time.time() + CONNECT_WARMUP_SECONDS
+                    t_connect = time.time()
+                    warmup_until = t_connect + CONNECT_WARMUP_SECONDS
+                    rate_until = warmup_until + RATE_MEASURE_SECONDS
+                    rate_frames = 0
+                    rate_reported = False
                     while not self._stop.is_set():
                         ok, frame = cap.read()
                         if not ok:
                             break
-                        if time.time() < warmup_until:
+                        now = time.time()
+                        if now < warmup_until:
                             # The decoder joined mid-GOP: until the first keyframe
                             # arrives it can only guess, and these frames may be
                             # glitched (FFmpeg's "corrupted macroblock" lines).
                             continue
+                        if not rate_reported:
+                            # Measure the true frame rate once, right after the
+                            # warm-up (the connect-time burst of buffered frames
+                            # has drained); the camera's metadata claim is often
+                            # wrong (some encoders report half the real fps).
+                            if now < rate_until:
+                                rate_frames += 1
+                            else:
+                                rate_reported = True
+                                measured = rate_frames / RATE_MEASURE_SECONDS
+                                claimed = cap.get(cv2.CAP_PROP_FPS)
+                                if claimed > 0.0:
+                                    log.info(
+                                        "Stream rate: ~%.1f fps measured over %.1f s "
+                                        "(camera metadata claimed %.1f fps)",
+                                        measured, RATE_MEASURE_SECONDS, claimed,
+                                    )
+                                else:
+                                    log.info(
+                                        "Stream rate: ~%.1f fps measured over %.1f s",
+                                        measured, RATE_MEASURE_SECONDS,
+                                    )
                         with self._lock:
                             self._frame = frame
                             self._frame_ts = time.time()
