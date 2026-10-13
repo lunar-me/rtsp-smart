@@ -477,7 +477,7 @@ def save_screenshot(image, save_dir: Path, detections_log: Path, stream_name: st
     now = datetime.now()
     day_dir = save_dir / now.strftime("%Y-%m-%d")
     day_dir.mkdir(parents=True, exist_ok=True)
-    name = f"{stream_name} {now.strftime('%Y-%m-%d %H-%M-%S')}.jpg"
+    name = f"{stream_name} {now.strftime('%Y-%m-%d %H-%M-%S.%f')[:-3]}.jpg"
     path = day_dir / name
     if not cv2.imwrite(str(path), image, [int(cv2.IMWRITE_JPEG_QUALITY), 92]):
         log.error("Failed to write screenshot %s", path)
