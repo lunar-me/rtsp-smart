@@ -9,14 +9,15 @@ frame) and run through YOLO restricted to the TRIGGER_CLASS classes
 >= CONFIDENCE_THRESHOLD one screenshot is saved every
 SAVE_INTERVAL_SECONDS into SAVE_DIR (relative or absolute), in a per-day
 subfolder: "<SAVE_DIR>/<YYYY-MM-DD>/<RTSP_NAME> YYYY-MM-DD HH-MM-SS.jpg".
-After a screenshot, no frame is analysed for SAVE_INTERVAL_SECONDS
-(no save is possible anyway). If the stream drops, the service
+Screenshots are written by a background saver thread — the analysis loop
+never waits on the disk. After a screenshot, no frame is analysed for
+SAVE_INTERVAL_SECONDS (no save is possible anyway). If the stream drops, the service
 reconnects automatically (the first second of frames is discarded —
 a decoder that joins mid-GOP cannot produce intact frames before the
 first keyframe). Frames the decoder flags as corrupt (glitched H.264 data)
 are discarded and counted — they never reach detection.
 Every STAT_INTERVAL_SECONDS a status line (received, analysed, dropped,
-corrupt, device, screenshots) proves it is alive.
+stale, corrupt, trigger frames, shots) proves it is alive.
 
 Usage:
     python main.py                 run the service (Ctrl+C to stop)
@@ -37,6 +38,7 @@ import sys
 import threading
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -61,6 +63,7 @@ TRIGGER_CLASS_ID = 0         # COCO id of "person" — the default trigger class
 STALE_FRAME_SECONDS = 2.0    # frames older than this are skipped (stream hiccup)
 CONNECT_WARMUP_SECONDS = 1.0 # after (re)connect, frames are discarded this long (mid-GOP join)
 RATE_MEASURE_SECONDS = 2.0   # the true stream fps is measured over this long, after the warm-up
+SAVER_QUEUE_WARN = 10        # screenshots: warn once this many wait for the disk
 SELFTEST_IMAGE = "https://ultralytics.com/images/bus.jpg"
 
 log = logging.getLogger("rtsp-smart")
@@ -478,6 +481,7 @@ def save_screenshot(image, save_dir: Path, detections_log: Path, stream_name: st
                     max_conf: float, count: int) -> bool:
     """Write one screenshot plus a JSONL record; returns True on success.
 
+    Runs in the saver thread (ScreenshotSaver), never in the analysis loop.
     Screenshots go into a per-day subfolder of save_dir and are named
     "<stream name> YYYY-MM-DD HH-MM-SS.jpg". Saving twice in the same second
     silently overwrites the earlier file (deterministic name, no duplicates).
@@ -502,6 +506,65 @@ def save_screenshot(image, save_dir: Path, detections_log: Path, stream_name: st
 
     log.info("Screenshot saved: %s (%d object(s), confidence %.1f%%)", path, count, max_conf * 100)
     return True
+
+
+class ScreenshotSaver:
+    """Writes screenshots in one background thread, so the analysis loop
+    never waits on the disk (a JPEG write can take tens of milliseconds —
+    or seconds on a busy or network drive).
+
+    submit() takes the finished image and returns immediately. A single
+    worker keeps saves strictly ordered: two screenshots never compete for
+    the disk and appends to detections.jsonl stay serialized. Counters are
+    lock-protected like RTSPReader's; a warning fires if the disk falls
+    more than SAVER_QUEUE_WARN saves behind. shutdown() drains the queue
+    before the summary line, so the service never exits with a save in
+    flight.
+    """
+
+    def __init__(self, save_dir: Path, detections_log: Path, stream_name: str) -> None:
+        self._save_dir = save_dir
+        self._detections_log = detections_log
+        self._stream_name = stream_name
+        self._lock = threading.Lock()
+        self._saved = 0
+        self._pending = 0
+        self._lag_warned = False
+        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="screenshot-saver")
+
+    def submit(self, image, count: int, max_conf: float) -> None:
+        """Queue one screenshot for writing; returns immediately."""
+        with self._lock:
+            self._pending += 1
+            if self._pending > SAVER_QUEUE_WARN and not self._lag_warned:
+                self._lag_warned = True
+                log.warning("Screenshot saves lag behind: %d queued — is the disk slow?",
+                            self._pending)
+
+        def job():
+            try:
+                if save_screenshot(image, self._save_dir, self._detections_log,
+                                   self._stream_name, max_conf, count):
+                    with self._lock:
+                        self._saved += 1
+            except Exception as exc:      # a failed write must not kill the worker
+                log.error("Screenshot save failed: %s", exc)
+            finally:
+                with self._lock:
+                    self._pending -= 1
+                    if self._pending == 0:
+                        self._lag_warned = False    # re-arm the lag warning
+
+        self._pool.submit(job)
+
+    def saved(self) -> int:
+        """Screenshots actually written to disk since the service started."""
+        with self._lock:
+            return self._saved
+
+    def shutdown(self) -> None:
+        """Wait until every queued save is on disk (before the summary line)."""
+        self._pool.shutdown(wait=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -535,6 +598,7 @@ def run_service(cfg: dict, limit_seconds: float | None = None) -> int:
         cfg["save_interval"], save_dir,
     )
 
+    saver = ScreenshotSaver(save_dir, detections_log, cfg["stream_name"])
     reader = RTSPReader(cfg["rtsp_url"], cfg["transport"])
     reader.start()
 
@@ -542,7 +606,6 @@ def run_service(cfg: dict, limit_seconds: float | None = None) -> int:
     last_save = 0.0
     last_wait_log = 0.0
     frames_analysed = 0
-    screenshots = 0
     frame_period = 1.0 / max(cfg["detect_fps"], 0.1)
     started = time.time()
 
@@ -553,8 +616,8 @@ def run_service(cfg: dict, limit_seconds: float | None = None) -> int:
     stat_analysed = 0
     stat_stale = 0
     stat_trigger = 0
-    stat_shots = 0
     stat_infer_ms = 0.0
+    saved_prev = 0          # saver.saved() at the previous STAT line
     window_logged = False
 
     try:
@@ -569,6 +632,7 @@ def run_service(cfg: dict, limit_seconds: float | None = None) -> int:
                 window = now - last_stat
                 received = reader.frames_read() - frames_read_prev
                 corrupt = reader.corrupt_skipped() - corrupt_prev
+                shots = saver.saved() - saved_prev
                 # The loop samples only the newest frame at DETECT_FPS; frames
                 # are also skipped while the save cooldown runs. Both count as
                 # dropped — by design. "stale" counts checks skipped because the
@@ -578,14 +642,15 @@ def run_service(cfg: dict, limit_seconds: float | None = None) -> int:
                 avg_ms = stat_infer_ms / stat_analysed if stat_analysed else 0.0
                 log.info(
                     "STAT %ds: stream %d fr | analysed %d (%.1f fps, %.0f ms/frame) | "
-                    "dropped %d | corrupt %d fr | trigger %d fr",
+                    "dropped %d | stale %d | corrupt %d fr | trigger %d fr | shots %d",
                     int(window), received, stat_analysed, fps, avg_ms,
-                    dropped, corrupt, stat_trigger,
+                    dropped, stat_stale, corrupt, stat_trigger, shots,
                 )
                 last_stat = now
                 frames_read_prev = reader.frames_read()
                 corrupt_prev = reader.corrupt_skipped()
-                stat_analysed = stat_stale = stat_trigger = stat_shots = 0
+                saved_prev = saver.saved()
+                stat_analysed = stat_stale = stat_trigger = 0
                 stat_infer_ms = 0.0
 
             frame, frame_ts = reader.latest()
@@ -637,10 +702,10 @@ def run_service(cfg: dict, limit_seconds: float | None = None) -> int:
             # affects the save pacing.
             save_now = bool(count) and time.time() - last_save >= cfg["save_interval"]
             if save_now or manual_shot:
-                image = result.plot() if cfg["draw_boxes"] else crop
-                if save_screenshot(image, save_dir, detections_log, cfg["stream_name"], max_conf, count):
-                    screenshots += 1
-                    stat_shots += 1
+                # A private copy: the saver thread must not share the reader's
+                # frame buffer. result.plot() already returns a fresh image.
+                image = result.plot() if cfg["draw_boxes"] else crop.copy()
+                saver.submit(image, count, max_conf)   # disk I/O happens in the background
                 if save_now:
                     last_save = time.time()
 
@@ -652,8 +717,9 @@ def run_service(cfg: dict, limit_seconds: float | None = None) -> int:
         log.info("Stopped by user (Ctrl+C).")
     finally:
         reader.stop()
+        saver.shutdown()   # queued screenshots hit the disk before the summary
 
-    log.info("Done: %d frame(s) analysed, %d screenshot(s) saved.", frames_analysed, screenshots)
+    log.info("Done: %d frame(s) analysed, %d screenshot(s) saved.", frames_analysed, saver.saved())
     return 0
 
 
