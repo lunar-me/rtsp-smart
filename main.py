@@ -22,6 +22,7 @@ Usage:
     python main.py                 run the service (Ctrl+C to stop)
     python main.py --selftest     verify the detection pipeline without a camera
     python main.py --limit 30     run for 30 seconds, then stop (for testing)
+    python main.py --env-file .env.garden   use a non-default environment file (default: .env)
 """
 
 from __future__ import annotations
@@ -99,8 +100,15 @@ def parse_active_window(raw: str) -> tuple[float, float, float, float]:
     return vals[0], vals[1], vals[2], vals[3]
 
 
-def load_config() -> dict:
-    load_dotenv(PROJECT_ROOT / ".env")
+def resolve_env_file(env_file: str | Path) -> Path:
+    """Resolve an environment-file path: absolute paths are kept as-is,
+    relative ones are taken against the project root (like the default .env)."""
+    path = Path(env_file).expanduser()
+    return path if path.is_absolute() else PROJECT_ROOT / path
+
+
+def load_config(env_file: str | Path = ".env") -> dict:
+    load_dotenv(resolve_env_file(env_file))
     sanitize_env()
 
     return {
@@ -709,15 +717,23 @@ def main() -> int:
     )
     parser.add_argument("--selftest", action="store_true",
                         help="verify the detection pipeline on a sample image; no camera needed")
-    parser.add_argument("--url", help="override the RTSP URL from .env")
+    parser.add_argument("--url", help="override the RTSP URL from the environment file")
+    parser.add_argument("--env-file", metavar="FILE",
+                        help="environment file to read (default: .env in the project root)")
     parser.add_argument("--limit", type=float, metavar="SECONDS",
                         help="stop automatically after this many seconds")
     args = parser.parse_args()
 
-    cfg = load_config()
+    if args.env_file and not resolve_env_file(args.env_file).is_file():
+        print(f"error: environment file not found: {resolve_env_file(args.env_file)}",
+              file=sys.stderr)
+        return 1
+    cfg = load_config(args.env_file or ".env")
     if args.url:
         cfg["rtsp_url"] = args.url
     setup_logging(cfg["log_file"])
+    if args.env_file:
+        log.info("Configuration loaded from %s", resolve_env_file(args.env_file))
 
     if args.selftest:
         return run_selftest(cfg)

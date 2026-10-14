@@ -71,6 +71,12 @@ python main.py                # start the service (Ctrl+C to stop)
 
 Copy [`.env.example`](.env.example) to `.env` as a starting point — it lists every key with its default.
 
+Several configurations (e.g. one per camera)? Keep one file each — say
+`.env.garden` — and pick it at startup: `python main.py --env-file .env.garden`
+(`check_stream.py` accepts the same option). Relative paths resolve against the
+project folder, absolute paths work too; without the option the service reads
+`.env` from the project root.
+
 | Key | Default | Meaning |
 |---|---|---|
 | `RTSP_STREAM` | – | RTSP URL (`RTSP_STRAM` / `RTSP_URL` also accepted) |

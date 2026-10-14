@@ -12,6 +12,8 @@ selftest_input.jpg
 selftest_output.jpg
 stream_check.jpg
 
-# Environment / secrets
+# Environment / secrets (.env.example is the tracked template)
 .env
+.env.*
+!.env.example
 .venv/

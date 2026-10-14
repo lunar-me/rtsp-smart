@@ -23,19 +23,25 @@ from pathlib import Path
 import cv2
 
 from main import (CONNECT_WARMUP_SECONDS, crop_active_window, load_config,
-                  mask_credentials)
+                  mask_credentials, resolve_env_file)
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="RTSP connectivity diagnostic.")
-    parser.add_argument("--url", help="override the RTSP URL from .env")
+    parser.add_argument("--url", help="override the RTSP URL from the environment file")
+    parser.add_argument("--env-file", metavar="FILE",
+                        help="environment file to read (default: .env in the project root)")
     parser.add_argument("--frames", type=int, default=30,
                         help="how many frames to read (default 30)")
     args = parser.parse_args()
 
-    cfg = load_config()
+    if args.env_file and not resolve_env_file(args.env_file).is_file():
+        print(f"error: environment file not found: {resolve_env_file(args.env_file)}",
+              file=sys.stderr)
+        return 1
+    cfg = load_config(args.env_file or ".env")
     url = args.url or cfg["rtsp_url"]
     if not url:
         print("No RTSP URL configured — set RTSP_STREAM in .env or pass --url.")
